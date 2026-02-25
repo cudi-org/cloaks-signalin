@@ -1,0 +1,17 @@
+{
+  "name": "cloaks-signaling",
+  "version": "1.1.0",
+  "description": "Signaling server for Cloaks P2P Mesh Network",
+  "main": "index.js",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "ws": "^8.12.1",
+    "bcrypt": "^5.1.1"
+  }
+}
