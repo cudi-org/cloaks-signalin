@@ -18,7 +18,6 @@ function heartbeat() { this.isAlive = true; }
 wss.on('connection', (ws, req) => {
     const ip = req.socket.remoteAddress;
     const currentIPCount = (connectionsPerIP.get(ip) || 0) + 1;
-    
     if (currentIPCount > 20) return ws.terminate();
     connectionsPerIP.set(ip, currentIPCount);
 
@@ -26,7 +25,6 @@ wss.on('connection', (ws, req) => {
     ws.id = crypto.randomBytes(4).toString('hex');
     ws.msgCount = 0;
     ws.msgTs = Date.now();
-
     ws.on('pong', heartbeat);
 
     ws.on('message', async message => {
@@ -118,4 +116,75 @@ function broadcastToRoom(roomId, messageObj, sender, targetId = null) {
 }
 
 function handleMessengerLogic(ws, data, messageString) {
-    const clients = appClients.get('c
+    if (!appClients.has('cudi-messenger')) appClients.set('cudi-messenger', new Map());
+    const clients = appClients.get('cudi-messenger');
+    
+    switch (data.type) {
+        case 'register':
+            if (data.peerId) {
+                clients.set(data.peerId, ws);
+                ws.peerId = data.peerId;
+                ws.send(JSON.stringify({ type: 'registered', peerId: data.peerId }));
+                if (pendingMatches.has(data.peerId)) {
+                    const requesterWs = pendingMatches.get(data.peerId);
+                    if (requesterWs.readyState === WebSocket.OPEN) {
+                        requesterWs.send(JSON.stringify({ type: 'peer_found', peerId: data.peerId }));
+                        ws.send(JSON.stringify({ type: 'peer_found', peerId: requesterWs.peerId }));
+                    }
+                    pendingMatches.delete(data.peerId);
+                }
+            }
+            break;
+
+        case 'find_peer':
+            if (data.targetPeerId) {
+                if (clients.has(data.targetPeerId)) {
+                    ws.send(JSON.stringify({ type: 'peer_found', peerId: data.targetPeerId }));
+                } else {
+                    pendingMatches.set(data.targetPeerId, ws);
+                    setTimeout(() => {
+                        if (pendingMatches.get(data.targetPeerId) === ws) pendingMatches.delete(data.targetPeerId);
+                    }, 300000);
+                }
+            }
+            break;
+
+        case 'offer':
+        case 'answer':
+        case 'candidate':
+            if (data.targetPeerId && clients.has(data.targetPeerId)) {
+                const targetWs = clients.get(data.targetPeerId);
+                if (targetWs.readyState === WebSocket.OPEN) {
+                    const forwardData = JSON.parse(messageString);
+                    forwardData.fromPeerId = ws.peerId;
+                    targetWs.send(JSON.stringify(forwardData));
+                }
+            }
+            break;
+    }
+}
+
+function limpiarRecursos(ws) {
+    if (ws.room && cloakRooms.has(ws.room)) {
+        const room = cloakRooms.get(ws.room);
+        room.clients.delete(ws);
+        broadcastToRoom(ws.room, { type: 'peer_left', peerId: ws.id });
+        if (room.clients.size === 0) cloakRooms.delete(ws.room);
+    }
+    if (ws.peerId && appClients.has('cudi-messenger')) {
+        appClients.get('cudi-messenger').delete(ws.peerId);
+        for (let [targetId, requesterWs] of pendingMatches) {
+            if (requesterWs === ws) pendingMatches.delete(targetId);
+        }
+    }
+}
+
+const interval = setInterval(() => {
+    wss.clients.forEach(ws => {
+        if (!ws.isAlive) return ws.terminate();
+        ws.isAlive = false;
+        ws.ping();
+    });
+}, HEARTBEAT_INTERVAL);
+
+wss.on('close', () => clearInterval(interval));
