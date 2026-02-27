@@ -125,6 +125,15 @@ function handleMessengerLogic(ws, data, messageString) {
                 clients.set(data.peerId, ws);
                 ws.peerId = data.peerId;
                 ws.send(JSON.stringify({ type: 'registered', peerId: data.peerId }));
+                
+                wss.clients.forEach(client => {
+                    if (client.searchingFor === data.peerId) {
+                        client.send(JSON.stringify({ type: 'peer_found', peerId: data.peerId }));
+                        ws.send(JSON.stringify({ type: 'peer_found', peerId: client.peerId }));
+                        client.searchingFor = null;
+                    }
+                });
+
                 if (pendingMatches.has(data.peerId)) {
                     const requesterWs = pendingMatches.get(data.peerId);
                     if (requesterWs.readyState === WebSocket.OPEN) {
@@ -141,6 +150,7 @@ function handleMessengerLogic(ws, data, messageString) {
                 if (clients.has(data.targetPeerId)) {
                     ws.send(JSON.stringify({ type: 'peer_found', peerId: data.targetPeerId }));
                 } else {
+                    ws.searchingFor = data.targetPeerId;
                     pendingMatches.set(data.targetPeerId, ws);
                     setTimeout(() => {
                         if (pendingMatches.get(data.targetPeerId) === ws) pendingMatches.delete(data.targetPeerId);
