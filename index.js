@@ -60,6 +60,7 @@ async function handleCloakLogic(ws, data, messageString) {
     switch (data.type) {
         case 'join':
             if (!data.room) return;
+            if (data.permanentId) ws.id = data.permanentId;
             if (!cloakRooms.has(data.room)) {
                 let passwordHash = data.password ? await bcrypt.hash(data.password, 8) : null;
                 cloakRooms.set(data.room, {
@@ -124,12 +125,13 @@ function handleMessengerLogic(ws, data, messageString) {
             if (data.peerId) {
                 clients.set(data.peerId, ws);
                 ws.peerId = data.peerId;
+                ws.id = data.peerId;
                 ws.send(JSON.stringify({ type: 'registered', peerId: data.peerId }));
                 
                 wss.clients.forEach(client => {
                     if (client.searchingFor === data.peerId) {
                         client.send(JSON.stringify({ type: 'peer_found', peerId: data.peerId }));
-                        ws.send(JSON.stringify({ type: 'peer_found', peerId: client.peerId }));
+                        ws.send(JSON.stringify({ type: 'peer_found', peerId: client.peerId || client.id }));
                         client.searchingFor = null;
                     }
                 });
@@ -138,7 +140,7 @@ function handleMessengerLogic(ws, data, messageString) {
                     const requesterWs = pendingMatches.get(data.peerId);
                     if (requesterWs.readyState === WebSocket.OPEN) {
                         requesterWs.send(JSON.stringify({ type: 'peer_found', peerId: data.peerId }));
-                        ws.send(JSON.stringify({ type: 'peer_found', peerId: requesterWs.peerId }));
+                        ws.send(JSON.stringify({ type: 'peer_found', peerId: requesterWs.peerId || requesterWs.id }));
                     }
                     pendingMatches.delete(data.peerId);
                 }
@@ -166,7 +168,7 @@ function handleMessengerLogic(ws, data, messageString) {
                 const targetWs = clients.get(data.targetPeerId);
                 if (targetWs.readyState === WebSocket.OPEN) {
                     const forwardData = JSON.parse(messageString);
-                    forwardData.fromPeerId = ws.peerId;
+                    forwardData.fromPeerId = ws.peerId || ws.id;
                     targetWs.send(JSON.stringify(forwardData));
                 }
             }
@@ -181,8 +183,8 @@ function limpiarRecursos(ws) {
         broadcastToRoom(ws.room, { type: 'peer_left', peerId: ws.id });
         if (room.clients.size === 0) cloakRooms.delete(ws.room);
     }
-    if (ws.peerId && appClients.has('cudi-messenger')) {
-        appClients.get('cudi-messenger').delete(ws.peerId);
+    if ((ws.peerId || ws.id) && appClients.has('cudi-messenger')) {
+        appClients.get('cudi-messenger').delete(ws.peerId || ws.id);
         for (let [targetId, requesterWs] of pendingMatches) {
             if (requesterWs === ws) pendingMatches.delete(targetId);
         }
