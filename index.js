@@ -1,12 +1,16 @@
-require('dotenv').config();
-
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const Joi = require('joi');
 
 const PORT = process.env.PORT || 8080;
 const MAX_CONNECTIONS_PER_IP = parseInt(process.env.MAX_CONNECTIONS_PER_IP, 10) || 20;
 const MAX_MESSAGES_PER_SECOND = parseInt(process.env.MAX_MESSAGES_PER_SECOND, 10) || 50;
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_for_dev_only';
+const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS, 10) || 12;
+const MAX_MESSAGE_SIZE = 64 * 1024; 
+const HEARTBEAT_INTERVAL = 30000;
 
 const wss = new WebSocket.Server({ port: PORT });
 
@@ -15,10 +19,39 @@ const cloakRooms = new Map();
 const connectionsPerIP = new Map();
 const pendingMatches = new Map();
 
-const MAX_MESSAGE_SIZE = 64 * 1024; 
-const HEARTBEAT_INTERVAL = 30000;
+const messageSchema = Joi.object({
+    type: Joi.string().required(),
+    room: Joi.string().optional(),
+    appType: Joi.string().required(),
+    peerId: Joi.string().optional(),
+    targetPeerId: Joi.string().optional(),
+    password: Joi.string().optional(),
+    alias: Joi.string().max(32).optional(),
+    permanentId: Joi.string().optional()
+}).unknown(true);
 
 function heartbeat() { this.isAlive = true; }
+
+function generateSecureId() {
+    return crypto.randomBytes(16).toString('hex');
+}
+
+function generatePeerToken(peerId) {
+    return jwt.sign(
+        { peerId, iat: Math.floor(Date.now() / 1000) },
+        JWT_SECRET,
+        { expiresIn: '24h' }
+    );
+}
+
+async function validateMessage(data) {
+    try {
+        const { error, value } = await messageSchema.validateAsync(data);
+        return error ? null : value;
+    } catch (e) {
+        return null;
+    }
+}
 
 wss.on('connection', (ws, req) => {
     const ip = req.socket.remoteAddress;
@@ -28,7 +61,7 @@ wss.on('connection', (ws, req) => {
     connectionsPerIP.set(ip, currentIPCount);
 
     ws.isAlive = true;
-    ws.id = crypto.randomBytes(4).toString('hex');
+    ws.id = generateSecureId();
     ws.msgCount = 0;
     ws.msgTs = Date.now();
     ws.on('pong', heartbeat);
@@ -44,14 +77,25 @@ wss.on('connection', (ws, req) => {
         try {
             const messageString = message.toString();
             if (messageString.length > MAX_MESSAGE_SIZE) return ws.close(1009);
-            const data = JSON.parse(messageString);
+            
+            const rawData = JSON.parse(messageString);
+            const data = await validateMessage(rawData);
+
+            if (!data) {
+                return ws.send(JSON.stringify({ 
+                    type: 'error', 
+                    message: 'Invalid message format' 
+                }));
+            }
 
             if (data.appType === 'cloaks' || data.appType === 'cudi-sync') {
                 await handleCloakLogic(ws, data, messageString);
             } else if (data.appType === 'cudi-messenger') {
                 handleMessengerLogic(ws, data, messageString);
             }
-        } catch (e) { return; }
+        } catch (e) {
+            return;
+        }
     });
 
     ws.on('close', () => {
@@ -67,8 +111,13 @@ async function handleCloakLogic(ws, data, messageString) {
         case 'join':
             if (!data.room) return;
             if (data.permanentId) ws.id = data.permanentId;
+            
+            const sanitizedAlias = (data.alias || 'Cloaker')
+                .slice(0, 32)
+                .replace(/[<>\"'`]/g, '');
+
             if (!cloakRooms.has(data.room)) {
-                let passwordHash = data.password ? await bcrypt.hash(data.password, 8) : null;
+                let passwordHash = data.password ? await bcrypt.hash(data.password, BCRYPT_ROUNDS) : null;
                 cloakRooms.set(data.room, {
                     clients: new Set(),
                     password: passwordHash,
@@ -81,18 +130,24 @@ async function handleCloakLogic(ws, data, messageString) {
                 const match = await bcrypt.compare(data.password, room.password);
                 if (!match) return ws.send(JSON.stringify({ type: 'error', message: 'Wrong password' }));
             }
+
             ws.room = data.room;
-            ws.alias = data.alias || 'Cloaker';
+            ws.alias = sanitizedAlias;
+            ws.peerToken = generatePeerToken(ws.id);
             room.clients.add(ws);
+
             const peersInRoom = Array.from(room.clients)
                 .filter(c => c !== ws)
                 .map(c => ({ id: c.id, alias: c.alias }));
+
             ws.send(JSON.stringify({ 
                 type: 'joined', 
                 room: data.room, 
                 yourId: ws.id,
+                token: ws.peerToken,
                 peers: peersInRoom 
             }));
+
             broadcastToRoom(data.room, { 
                 type: 'peer_joined', 
                 peerId: ws.id, 
@@ -129,10 +184,19 @@ function handleMessengerLogic(ws, data, messageString) {
     switch (data.type) {
         case 'register':
             if (data.peerId) {
+                if (!/^[a-f0-9]{32}$/.test(data.peerId)) {
+                    return ws.send(JSON.stringify({ type: 'error', message: 'Invalid peer ID format' }));
+                }
                 clients.set(data.peerId, ws);
                 ws.peerId = data.peerId;
                 ws.id = data.peerId;
-                ws.send(JSON.stringify({ type: 'registered', peerId: data.peerId }));
+                ws.peerToken = generatePeerToken(data.peerId);
+                
+                ws.send(JSON.stringify({ 
+                    type: 'registered', 
+                    peerId: data.peerId,
+                    token: ws.peerToken
+                }));
                 
                 wss.clients.forEach(client => {
                     if (client.searchingFor === data.peerId) {
@@ -189,8 +253,9 @@ function limpiarRecursos(ws) {
         broadcastToRoom(ws.room, { type: 'peer_left', peerId: ws.id });
         if (room.clients.size === 0) cloakRooms.delete(ws.room);
     }
-    if ((ws.peerId || ws.id) && appClients.has('cudi-messenger')) {
-        appClients.get('cudi-messenger').delete(ws.peerId || ws.id);
+    const currentId = ws.peerId || ws.id;
+    if (currentId && appClients.has('cudi-messenger')) {
+        appClients.get('cudi-messenger').delete(currentId);
         for (let [targetId, requesterWs] of pendingMatches) {
             if (requesterWs === ws) pendingMatches.delete(targetId);
         }
