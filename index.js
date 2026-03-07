@@ -1,8 +1,13 @@
+require('dotenv').config();
+
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 
 const PORT = process.env.PORT || 8080;
+const MAX_CONNECTIONS_PER_IP = parseInt(process.env.MAX_CONNECTIONS_PER_IP, 10) || 20;
+const MAX_MESSAGES_PER_SECOND = parseInt(process.env.MAX_MESSAGES_PER_SECOND, 10) || 50;
+
 const wss = new WebSocket.Server({ port: PORT });
 
 const appClients = new Map();
@@ -18,7 +23,8 @@ function heartbeat() { this.isAlive = true; }
 wss.on('connection', (ws, req) => {
     const ip = req.socket.remoteAddress;
     const currentIPCount = (connectionsPerIP.get(ip) || 0) + 1;
-    if (currentIPCount > 20) return ws.terminate();
+    
+    if (currentIPCount > MAX_CONNECTIONS_PER_IP) return ws.terminate();
     connectionsPerIP.set(ip, currentIPCount);
 
     ws.isAlive = true;
@@ -33,7 +39,7 @@ wss.on('connection', (ws, req) => {
             ws.msgTs = now; 
             ws.msgCount = 0; 
         }
-        if (++ws.msgCount > 50) return ws.close(1011);
+        if (++ws.msgCount > MAX_MESSAGES_PER_SECOND) return ws.close(1011);
 
         try {
             const messageString = message.toString();
