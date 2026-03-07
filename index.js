@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const Joi = require('joi');
+const { URL } = require('url');
 
 const PORT = process.env.PORT || 8080;
 const MAX_CONNECTIONS_PER_IP = parseInt(process.env.MAX_CONNECTIONS_PER_IP, 10) || 20;
@@ -27,7 +28,11 @@ const messageSchema = Joi.object({
     targetPeerId: Joi.string().optional(),
     password: Joi.string().optional(),
     alias: Joi.string().max(32).optional(),
-    permanentId: Joi.string().optional()
+    permanentId: Joi.string().optional(),
+    token: Joi.string().optional(),
+    signalType: Joi.string().optional(),
+    candidate: Joi.any().optional(),
+    sdp: Joi.any().optional()
 }).unknown(true);
 
 function heartbeat() { this.isAlive = true; }
@@ -79,12 +84,15 @@ wss.on('connection', (ws, req) => {
             if (messageString.length > MAX_MESSAGE_SIZE) return ws.close(1009);
             
             const rawData = JSON.parse(messageString);
+            
+            if (rawData.type === 'ping') return;
+
             const data = await validateMessage(rawData);
 
             if (!data) {
                 return ws.send(JSON.stringify({ 
                     type: 'error', 
-                    message: 'Invalid message format' 
+                    message: 'DEBUG: Joi rejected this message' 
                 }));
             }
 
@@ -111,6 +119,7 @@ async function handleCloakLogic(ws, data, messageString) {
         case 'join':
             if (!data.room) return;
             if (data.permanentId) ws.id = data.permanentId;
+            else if (data.peerId) ws.id = data.peerId;
             
             const sanitizedAlias = (data.alias || 'Cloaker')
                 .slice(0, 32)
@@ -184,9 +193,6 @@ function handleMessengerLogic(ws, data, messageString) {
     switch (data.type) {
         case 'register':
             if (data.peerId) {
-                if (!/^[a-f0-9]{32}$/.test(data.peerId)) {
-                    return ws.send(JSON.stringify({ type: 'error', message: 'Invalid peer ID format' }));
-                }
                 clients.set(data.peerId, ws);
                 ws.peerId = data.peerId;
                 ws.id = data.peerId;
