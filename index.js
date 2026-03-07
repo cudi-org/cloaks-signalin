@@ -40,13 +40,14 @@ function generatePeerToken(peerId) {
 }
 
 async function validateMessage(data) {
+    if (!data) return null;
+    if (data.type && data.appType) {
+        return data; 
+    }
     try {
         const { error, value } = await messageSchema.validateAsync(data);
-        if (!error) return value;
-        if (data.type && data.appType) return data;
-        return null;
+        return error ? null : value;
     } catch (e) {
-        if (data && data.type && data.appType) return data;
         return null;
     }
 }
@@ -74,8 +75,9 @@ wss.on('connection', (ws, req) => {
 
         try {
             const messageString = message.toString();
-            const rawData = JSON.parse(messageString);
+            if (messageString.length > MAX_MESSAGE_SIZE) return ws.close(1009);
             
+            const rawData = JSON.parse(messageString);
             if (rawData.type === 'ping') return;
 
             const data = await validateMessage(rawData);
