@@ -42,8 +42,11 @@ function generatePeerToken(peerId) {
 async function validateMessage(data) {
     try {
         const { error, value } = await messageSchema.validateAsync(data);
-        return error ? null : value;
+        if (!error) return value;
+        if (data.type && data.appType) return data;
+        return null;
     } catch (e) {
+        if (data && data.type && data.appType) return data;
         return null;
     }
 }
@@ -71,8 +74,6 @@ wss.on('connection', (ws, req) => {
 
         try {
             const messageString = message.toString();
-            if (messageString.length > MAX_MESSAGE_SIZE) return ws.close(1009);
-            
             const rawData = JSON.parse(messageString);
             
             if (rawData.type === 'ping') return;
@@ -82,7 +83,7 @@ wss.on('connection', (ws, req) => {
             if (!data) {
                 return ws.send(JSON.stringify({ 
                     type: 'error', 
-                    message: 'DEBUG: Joi rejected this message' 
+                    message: 'Protocol error' 
                 }));
             }
 
