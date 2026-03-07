@@ -22,17 +22,7 @@ const pendingMatches = new Map();
 
 const messageSchema = Joi.object({
     type: Joi.string().required(),
-    room: Joi.string().optional(),
-    appType: Joi.string().required(),
-    peerId: Joi.string().optional(),
-    targetPeerId: Joi.string().optional(),
-    password: Joi.string().optional(),
-    alias: Joi.string().max(32).optional(),
-    permanentId: Joi.string().optional(),
-    token: Joi.string().optional(),
-    signalType: Joi.string().optional(),
-    candidate: Joi.any().optional(),
-    sdp: Joi.any().optional()
+    appType: Joi.string().required()
 }).unknown(true);
 
 function heartbeat() { this.isAlive = true; }
@@ -118,8 +108,7 @@ async function handleCloakLogic(ws, data, messageString) {
     switch (data.type) {
         case 'join':
             if (!data.room) return;
-            if (data.permanentId) ws.id = data.permanentId;
-            else if (data.peerId) ws.id = data.peerId;
+            ws.id = data.permanentId || data.peerId || ws.id;
             
             const sanitizedAlias = (data.alias || 'Cloaker')
                 .slice(0, 32)
