@@ -232,6 +232,10 @@ function handleMessengerLogic(ws, data, messageString) {
         case 'offer':
         case 'answer':
         case 'candidate':
+        case 'call_invite':
+        case 'call_accept':
+        case 'call_reject':
+        case 'call_hangup':
             if (data.targetPeerId && clients.has(data.targetPeerId)) {
                 const targetWs = clients.get(data.targetPeerId);
                 if (targetWs.readyState === WebSocket.OPEN) {
